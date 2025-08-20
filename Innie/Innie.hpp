@@ -32,6 +32,7 @@ private:
             PCIBridge      = 0x060400,
             SATADevice     = 0x010601,
             NVMeDevice     = 0x010802,
+            RAIDDevice     = 0x010400,  // RAID controller class code
         };
     };
 };

@@ -89,22 +89,25 @@ void Innie::recurseBridge(IORegistryEntry *entry) {
             if (auto class_code = childEntry->getProperty("class-code")) {
                 if (auto codeData = OSDynamicCast(OSData, class_code)) {
                     code=*(uint32_t*)codeData->getBytesNoCopy();
-                    if (code == classCode::SATADevice || code == classCode::NVMeDevice){
-                        DBGLOG("found device %s", childEntry->getName());
-                        if (auto built_in = childEntry->getProperty("built-in")) {
-                            DBGLOG("device is already built-in");
-                        } else {
-                            internalizeDevice(childEntry);
-                        }
-                        break;
+                    if (code == classCode::SATADevice || code == classCode::NVMeDevice || code == classCode::RAIDDevice){
+                        DBGLOG("found storage device %s with class code 0x%x", childEntry->getName(), code);
+                        // Always process device, even if built-in exists (for consistency)
+                        internalizeDevice(childEntry);
+                        // Don't break - continue processing other devices in same bridge
                     }
-                    if (code == classCode::PCIBridge) {
+                    else if (code == classCode::PCIBridge) {
                         DBGLOG("found bridge %s", childEntry->getName());
-                        while (OSDynamicCast(OSBoolean, childEntry->getProperty("IOPCIConfigured")) != kOSBooleanTrue) {
-                            DBGLOG("waiting for PCI bridge to be configured");
+                        // Wait for bridge configuration with timeout
+                        int timeout = 1000; // 10 second timeout
+                        while (OSDynamicCast(OSBoolean, childEntry->getProperty("IOPCIConfigured")) != kOSBooleanTrue && timeout-- > 0) {
+                            DBGLOG("waiting for PCI bridge to be configured (timeout: %d)", timeout);
                             IOSleep(10);
                         }
-                        recurseBridge(childEntry);
+                        if (timeout > 0) {
+                            recurseBridge(childEntry);
+                        } else {
+                            DBGLOG("timeout waiting for bridge %s configuration", childEntry->getName());
+                        }
                     }
                 }
             }
@@ -114,70 +117,115 @@ void Innie::recurseBridge(IORegistryEntry *entry) {
 }
        
 void Innie::internalizeDevice(IORegistryEntry *entry) {
-    DBGLOG("adding built-in property");
+    DBGLOG("processing device %s for internalization", entry->getName());
+    
+    // Always set built-in property (force override if exists)
     setBuiltIn(entry);
     
-    while (OSDynamicCast(OSBoolean, entry->getProperty("IOPCIResourced")) != kOSBooleanTrue) {
-        DBGLOG("waiting for device to be resourced");
+    // Wait for device to be resourced with timeout
+    int timeout = 2000; // 20 second timeout
+    while (OSDynamicCast(OSBoolean, entry->getProperty("IOPCIResourced")) != kOSBooleanTrue && timeout-- > 0) {
+        DBGLOG("waiting for device to be resourced (timeout: %d)", timeout);
         IOSleep(10);
     }
     
-    // Proceed to update other properties
-    if (auto driverIterator = IORegistryIterator::iterateOver(entry, gIOServicePlane, kIORegistryIterateRecursively)) {
-        IORegistryEntry *driverEntry = nullptr;
-        while ((driverEntry = OSDynamicCast(IORegistryEntry, driverIterator->getNextObject())) != nullptr) {
-            DBGLOG("updating other properties");
-            updateOtherProperties(driverEntry);
-        }
-        driverIterator->release();
+    if (timeout <= 0) {
+        DBGLOG("timeout waiting for device %s to be resourced", entry->getName());
+        return;
     }
+    
+    // Multiple passes to ensure all driver entries are updated
+    for (int pass = 0; pass < 3; pass++) {
+        DBGLOG("updating properties pass %d for device %s", pass + 1, entry->getName());
+        
+        // Update properties on the device itself
+        updateOtherProperties(entry);
+        
+        // Proceed to update driver entries in service plane
+        if (auto driverIterator = IORegistryIterator::iterateOver(entry, gIOServicePlane, kIORegistryIterateRecursively)) {
+            IORegistryEntry *driverEntry = nullptr;
+            while ((driverEntry = OSDynamicCast(IORegistryEntry, driverIterator->getNextObject())) != nullptr) {
+                if (driverEntry != entry) { // Don't update the same entry twice
+                    DBGLOG("updating properties for driver entry %s", driverEntry->getName());
+                    updateOtherProperties(driverEntry);
+                }
+            }
+            driverIterator->release();
+        }
+        
+        // Wait between passes to allow driver loading
+        if (pass < 2) {
+            IOSleep(100);
+        }
+    }
+    
+    DBGLOG("completed internalization for device %s", entry->getName());
 }
 
 void Innie::setBuiltIn(IORegistryEntry *entry) {
     if (entry) {
-        char dummy = '\0';
-        entry->setProperty("built-in", &dummy, 1);
+        // Use OSData with single byte value 0x01 for built-in property
+        if (auto builtInData = OSData::withBytes("\x01", 1)) {
+            DBGLOG("setting built-in property for %s", entry->getName());
+            entry->setProperty("built-in", builtInData);
+            builtInData->release();
+        }
     }
 }
 
 void Innie::updateOtherProperties(IORegistryEntry *entry) {
-    if (entry) {
-        OSString *internal = OSString::withCString("Internal");
-        OSString *internalIcon = OSString::withCString("Internal.icns");
-        
-        // Update icon
-        if (auto icon = entry->getProperty("IOMediaIcon")) {
-            if (auto dict = OSDynamicCast(OSDictionary, icon)) {
-                dict = OSDictionary::withDictionary(dict);
-                if (auto res = dict->getObject("IOBundleResourceFile")) {
-                    dict->setObject("IOBundleResourceFile", internalIcon);
-                    entry->setProperty("IOMediaIcon", dict);
-                }
-                dict->release();
-            }
-        }
-        
-        // Update interconnect
-        if (auto loc = entry->getProperty("Physical Interconnect Location")) {
-            if (auto prop = OSDynamicCast(OSString, loc)) {
-                entry->setProperty("Physical Interconnect Location", internal);
-            }
-        }
-        
-        // Update update protocol characteristics
-        if (auto proto = entry->getProperty("Protocol Characteristics")) {
-            if (auto dict = OSDynamicCast(OSDictionary, proto)) {
-                dict = OSDictionary::withDictionary(dict);
-                if (auto loc = dict->getObject("Physical Interconnect Location")) {
-                    if (auto prop = OSDynamicCast(OSString, loc)) {
-                        dict->setObject("Physical Interconnect Location", internal);
-                        entry->setProperty("Protocol Characteristics", dict);
-                    }
-                }
-                dict->release();
-            }
-        }
-        internal->release();
-        internalIcon->release();
+    if (!entry) return;
+    
+    OSString *internal = OSString::withCString("Internal");
+    OSString *internalIcon = OSString::withCString("Internal.icns");
+    
+    if (!internal || !internalIcon) {
+        if (internal) internal->release();
+        if (internalIcon) internalIcon->release();
+        return;
     }
+    
+    // Force update Physical Interconnect Location (always set, don't check if exists)
+    DBGLOG("setting Physical Interconnect Location to Internal for %s", entry->getName());
+    entry->setProperty("Physical Interconnect Location", internal);
+    
+    // Update icon (always attempt to set)
+    if (auto icon = entry->getProperty("IOMediaIcon")) {
+        if (auto dict = OSDynamicCast(OSDictionary, icon)) {
+            dict = OSDictionary::withDictionary(dict);
+            if (dict) {
+                DBGLOG("updating IOMediaIcon for %s", entry->getName());
+                dict->setObject("IOBundleResourceFile", internalIcon);
+                entry->setProperty("IOMediaIcon", dict);
+                dict->release();
+            }
+        }
+    }
+    
+    // Update protocol characteristics (force update)
+    if (auto proto = entry->getProperty("Protocol Characteristics")) {
+        if (auto dict = OSDynamicCast(OSDictionary, proto)) {
+            dict = OSDictionary::withDictionary(dict);
+            if (dict) {
+                DBGLOG("updating Protocol Characteristics for %s", entry->getName());
+                dict->setObject("Physical Interconnect Location", internal);
+                entry->setProperty("Protocol Characteristics", dict);
+                dict->release();
+            }
+        }
+    } else {
+        // Create Protocol Characteristics if it doesn't exist
+        DBGLOG("creating Protocol Characteristics for %s", entry->getName());
+        if (auto newDict = OSDictionary::withCapacity(1)) {
+            newDict->setObject("Physical Interconnect Location", internal);
+            entry->setProperty("Protocol Characteristics", newDict);
+            newDict->release();
+        }
+    }
+    
+    // Also set built-in at this level for good measure
+    setBuiltIn(entry);
+    
+    internal->release();
+    internalIcon->release();
 }
