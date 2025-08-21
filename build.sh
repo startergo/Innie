@@ -2,6 +2,7 @@
 
 # Enhanced Innie Kernel Extension Build Script
 # Builds, signs (if possible), and packages the Enhanced Innie kernel extension
+# Usage: ./build.sh [clean|build|package|help] [DEBUG|RELEASE]
 
 set -e  # Exit on any error
 
@@ -111,7 +112,7 @@ clean_build() {
 
 # Function to build kernel extension
 build_kext() {
-    print_status "Building Enhanced Innie kernel extension with MacKernelSDK..."
+    print_status "Building Enhanced Innie kernel extension with MacKernelSDK ($BUILD_CONFIG configuration)..."
     
     cd "$PROJECT_DIR"
     
@@ -119,7 +120,7 @@ build_kext() {
     xcodebuild \
         -project Innie.xcodeproj \
         -target Innie \
-        -configuration Release \
+        -configuration "$BUILD_CONFIG" \
         -arch "$ARCH" \
         CONFIGURATION_BUILD_DIR="$BUILD_DIR" \
         KERNEL_EXTENSION_HEADER_SEARCH_PATHS="$MAC_KERNEL_SDK/Headers" \
@@ -283,7 +284,13 @@ create_archive() {
     print_status "Creating distributable archive..."
     
     cd "$PROJECT_DIR"
-    ARCHIVE_NAME="Enhanced-Innie-$(date +%Y%m%d-%H%M%S).tar.gz"
+    local config_suffix
+    if [[ "$BUILD_CONFIG" == "Debug" ]]; then
+        config_suffix="-DEBUG"
+    else
+        config_suffix=""
+    fi
+    ARCHIVE_NAME="Enhanced-Innie$(config_suffix)-$(date +%Y%m%d-%H%M%S).tar.gz"
     
     tar -czf "$ARCHIVE_NAME" -C "Enhanced-Innie-Package" .
     
@@ -295,10 +302,18 @@ create_archive() {
 show_summary() {
     echo
     echo -e "${BLUE}=== Build Summary ===${NC}"
+    print_status "Configuration: $BUILD_CONFIG"
     
     if [ -f "$BUILD_DIR/$KEXT_NAME" ]; then
         print_status "✅ Kernel extension built successfully"
         print_status "   Location: $BUILD_DIR/$KEXT_NAME"
+        
+        # Show debug logging status
+        if [[ "$BUILD_CONFIG" == "Debug" ]]; then
+            print_status "🐛 Debug logging: ENABLED (check Console.app or dmesg for 'Innie:' messages)"
+        else
+            print_status "🔧 Debug logging: DISABLED (optimized release build)"
+        fi
         
         # Check if signed
         if codesign -v "$BUILD_DIR/$KEXT_NAME" &>/dev/null; then
@@ -337,7 +352,62 @@ main() {
 }
 
 # Handle command line arguments
-case "${1:-}" in
+parse_arguments() {
+    local command="${1:-}"
+    local config="${2:-}"
+    local detected_config=""
+    
+    # Parse configuration argument (can be first or second argument)
+    for arg in "$1" "$2"; do
+        case "$arg" in
+            "DEBUG"|"debug")
+                detected_config="Debug"
+                ;;
+            "RELEASE"|"release"|"Release")
+                detected_config="Release"
+                ;;
+        esac
+    done
+    
+    # Parse command argument
+    case "$command" in
+        "clean")
+            if [[ "$config" =~ ^(DEBUG|debug|RELEASE|release|Release)$ ]]; then
+                command="clean"
+            fi
+            ;;
+        "build-only")
+            if [[ "$config" =~ ^(DEBUG|debug|RELEASE|release|Release)$ ]]; then
+                command="build-only"
+            fi
+            ;;
+        "package-only")
+            if [[ "$config" =~ ^(DEBUG|debug|RELEASE|release|Release)$ ]]; then
+                command="package-only"
+            fi
+            ;;
+        "DEBUG"|"debug"|"RELEASE"|"release"|"Release")
+            # Configuration specified as first argument, default to full build
+            command=""
+            ;;
+    esac
+    
+    echo "$command|$detected_config"
+}
+
+# Parse arguments first to set BUILD_CONFIG
+RESULT=$(parse_arguments "$@")
+COMMAND=$(echo "$RESULT" | cut -d'|' -f1)
+DETECTED_CONFIG=$(echo "$RESULT" | cut -d'|' -f2)
+
+# Set BUILD_CONFIG from detected config or default
+if [[ -n "$DETECTED_CONFIG" ]]; then
+    BUILD_CONFIG="$DETECTED_CONFIG"
+else
+    BUILD_CONFIG="Release"
+fi
+
+case "$COMMAND" in
     "clean")
         print_status "Cleaning build artifacts..."
         rm -rf "$BUILD_DIR"
@@ -346,6 +416,7 @@ case "${1:-}" in
         print_status "Clean completed!"
         ;;
     "build-only")
+        print_status "Building in $BUILD_CONFIG configuration..."
         check_build_environment
         clean_build
         build_kext
@@ -357,7 +428,8 @@ case "${1:-}" in
     "help"|"-h"|"--help")
         echo "Enhanced Innie Build Script"
         echo
-        echo "Usage: $0 [command]"
+        echo "Usage: $0 [command] [configuration]"
+        echo "   or: $0 [configuration] [command]"
         echo
         echo "Commands:"
         echo "  (none)      - Full build, sign, and package"
@@ -365,8 +437,19 @@ case "${1:-}" in
         echo "  build-only  - Build kernel extension only"
         echo "  package-only- Create package and archive only"
         echo "  help        - Show this help message"
+        echo
+        echo "Configurations:"
+        echo "  DEBUG       - Build with debug symbols and logging"
+        echo "  RELEASE     - Build optimized release version (default)"
+        echo
+        echo "Examples:"
+        echo "  $0                    # Build release version"
+        echo "  $0 DEBUG             # Build debug version"
+        echo "  $0 build-only DEBUG  # Build debug version only"
+        echo "  $0 DEBUG clean       # Clean build artifacts"
         ;;
     *)
+        print_status "Building in $BUILD_CONFIG configuration..."
         main
         ;;
 esac
