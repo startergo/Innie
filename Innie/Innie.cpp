@@ -98,7 +98,7 @@ void Innie::recurseBridge(IORegistryEntry *entry) {
                     else if (code == classCode::PCIBridge) {
                         DBGLOG("found bridge %s", childEntry->getName());
                         // Wait for bridge configuration with timeout
-                        int timeout = 1000; // 10 second timeout
+                        int timeout = 1000; // 10 second timeout (1000 iterations of 10ms each)
                         while (OSDynamicCast(OSBoolean, childEntry->getProperty("IOPCIConfigured")) != kOSBooleanTrue && timeout-- > 0) {
                             DBGLOG("waiting for PCI bridge to be configured (timeout: %d)", timeout);
                             IOSleep(10);
@@ -123,7 +123,7 @@ void Innie::internalizeDevice(IORegistryEntry *entry) {
     setBuiltIn(entry);
     
     // Wait for device to be resourced with timeout
-    int timeout = 2000; // 20 second timeout
+    int timeout = 2000; // 20 second timeout (2000 iterations of 10ms each)
     while (OSDynamicCast(OSBoolean, entry->getProperty("IOPCIResourced")) != kOSBooleanTrue && timeout-- > 0) {
         DBGLOG("waiting for device to be resourced (timeout: %d)", timeout);
         IOSleep(10);

@@ -208,8 +208,8 @@ create_package() {
     cp -R "$BUILD_DIR/$KEXT_NAME" "$PACKAGE_DIR/"
     
     # Copy installation scripts
-    cp "$PROJECT_DIR/../install_innie.sh" "$PACKAGE_DIR/" 2>/dev/null || true
-    cp "$PROJECT_DIR/../install_innie_signed.sh" "$PACKAGE_DIR/" 2>/dev/null || true
+    cp "$PROJECT_DIR/install_innie.sh" "$PACKAGE_DIR/" 2>/dev/null || true
+    cp "$PROJECT_DIR/install_innie_signed.sh" "$PACKAGE_DIR/" 2>/dev/null || true
     
     # Create README
     cat > "$PACKAGE_DIR/README.md" << 'EOF'
